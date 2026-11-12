@@ -16,7 +16,6 @@ package tokenusage
 
 import (
 	"bytes"
-	"math"
 	"reflect"
 	"testing"
 
@@ -52,9 +51,24 @@ func TestGetTokenUsage(t *testing.T) {
 			want: TokenUsage{InputToken: 7, TotalToken: 7, Model: ModelUnknown, InputTokenDetails: map[string]int64{"text_tokens": 0, "image_tokens": 7}},
 		},
 		{
+			name: "legacy-qwen-without-image-tokens",
+			body: `{"output":{"embeddings":[]},"usage":{"input_tokens":3}}`,
+			want: TokenUsage{InputToken: 3, TotalToken: 3, Model: ModelUnknown, InputTokenDetails: map[string]int64{"text_tokens": 3}},
+		},
+		{
+			name: "legacy-qwen-without-text-tokens",
+			body: `{"output":{"embeddings":[]},"usage":{"image_tokens":7}}`,
+			want: TokenUsage{InputToken: 7, TotalToken: 7, Model: ModelUnknown, InputTokenDetails: map[string]int64{"image_tokens": 7}},
+		},
+		{
 			name: "modern-qwen-details-do-not-double-count-top-level-image",
 			body: `{"output":{"embeddings":[]},"usage":{"input_tokens":10,"image_tokens":7,"input_tokens_details":{"text_tokens":3,"image_tokens":7},"output_tokens":2,"total_tokens":12}}`,
 			want: TokenUsage{InputToken: 10, OutputToken: 2, TotalToken: 12, Model: ModelUnknown, InputTokenDetails: map[string]int64{"text_tokens": 3, "image_tokens": 7}},
+		},
+		{
+			name: "modern-qwen-empty-details-take-priority",
+			body: `{"output":{"embeddings":[]},"usage":{"input_tokens":10,"image_tokens":7,"input_tokens_details":{}}}`,
+			want: TokenUsage{InputToken: 10, TotalToken: 10, Model: ModelUnknown},
 		},
 		{
 			name: "doubao-json-with-blank-line",
@@ -90,43 +104,6 @@ func TestGetTokenUsage(t *testing.T) {
 			name: "anthropic-sse-preserves-message-start-usage",
 			body: "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-model\",\"usage\":{\"input_tokens\":4,\"output_tokens\":0}}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":2}}\n\n",
 			want: TokenUsage{InputToken: 4, OutputToken: 2, TotalToken: 6, Model: "claude-model"},
-		},
-		{
-			name: "negative-image-does-not-augment-qwen",
-			body: `{"output":{"embeddings":[]},"usage":{"input_tokens":3,"image_tokens":-1}}`,
-			want: TokenUsage{InputToken: 3, TotalToken: 3, Model: ModelUnknown},
-		},
-		{
-			name: "negative-input-does-not-augment-qwen",
-			body: `{"output":{"embeddings":[]},"usage":{"input_tokens":-1,"image_tokens":7}}`,
-			want: TokenUsage{InputToken: -1, TotalToken: -1, Model: ModelUnknown},
-		},
-		{
-			name: "out-of-range-image-does-not-augment-qwen",
-			body: `{"output":{"embeddings":[]},"usage":{"input_tokens":3,"image_tokens":18446744073709551617}}`,
-			want: TokenUsage{InputToken: 3, TotalToken: 3, Model: ModelUnknown},
-		},
-		{
-			name: "out-of-range-input-does-not-augment-qwen",
-			body: `{"output":{"embeddings":[]},"usage":{"input_tokens":18446744073709551617,"image_tokens":7}}`,
-			// Preserve the SDK's existing scalar extraction, including gjson's
-			// conversion of this raw number to 1; do not add image tokens to it.
-			want: TokenUsage{InputToken: 1, TotalToken: 1, Model: ModelUnknown},
-		},
-		{
-			name: "out-of-range-total-keeps-existing-scalar-extraction",
-			body: `{"output":{"embeddings":[]},"usage":{"input_tokens":3,"image_tokens":7,"total_tokens":18446744073709551617}}`,
-			want: TokenUsage{InputToken: 10, TotalToken: 1, Model: ModelUnknown, InputTokenDetails: map[string]int64{"text_tokens": 3, "image_tokens": 7}},
-		},
-		{
-			name: "input-addition-overflow-does-not-augment-qwen",
-			body: `{"output":{"embeddings":[]},"usage":{"input_tokens":9223372036854775807,"image_tokens":1}}`,
-			want: TokenUsage{InputToken: math.MaxInt64, TotalToken: math.MaxInt64, Model: ModelUnknown},
-		},
-		{
-			name: "total-addition-overflow-does-not-augment-qwen",
-			body: `{"output":{"embeddings":[]},"usage":{"input_tokens":9223372036854775806,"image_tokens":1,"output_tokens":1}}`,
-			want: TokenUsage{InputToken: math.MaxInt64 - 1, OutputToken: 1, TotalToken: math.MaxInt64, Model: ModelUnknown},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -16,9 +16,7 @@ package tokenusage
 
 import (
 	"bytes"
-	"math"
 	"slices"
-	"strconv"
 
 	"github.com/higress-group/wasm-go/pkg/wrapper"
 	"github.com/tidwall/gjson"
@@ -53,6 +51,7 @@ const (
 	UsageInputTokensPathOpenAIResponses       = "response.usage.input_tokens"
 	UsageInputTokensPathGemini                = "usageMetadata.promptTokenCount"
 	UsageInputTokensPathAnthropicMessages     = "message.usage.input_tokens"
+	UsageImageTokensPathQwenEmbeddings        = "usage.image_tokens"
 
 	UsageCacheCreationInputTokensPathAnthropicMessages = "usage.cache_creation_input_tokens"
 	UsageCacheReadInputTokensPathAnthropicMessages     = "usage.cache_read_input_tokens"
@@ -130,20 +129,6 @@ func GetTokenUsage(ctx wrapper.HttpContext, body []byte) TokenUsage {
 		ExtractModel(ctx, chunk, &u)
 		ExtractInputTokens(ctx, chunk, &u)
 		ExtractOutputTokens(ctx, chunk, &u)
-		// Legacy Qwen embeddings report text and image input tokens separately.
-		if gjson.GetBytes(chunk, "output.embeddings").IsArray() && !gjson.GetBytes(chunk, "usage.input_tokens_details").Exists() {
-			text, textErr := strconv.ParseInt(gjson.GetBytes(chunk, "usage.input_tokens").Raw, 10, 64)
-			image, imageErr := strconv.ParseInt(gjson.GetBytes(chunk, "usage.image_tokens").Raw, 10, 64)
-			if textErr == nil && imageErr == nil && text >= 0 && image >= 0 && text <= math.MaxInt64-image {
-				input := text + image
-				if gjson.GetBytes(chunk, "usage.total_tokens").Exists() || u.OutputToken >= 0 && input <= math.MaxInt64-u.OutputToken {
-					u.InputToken = input
-					u.InputTokenDetails["text_tokens"] = text
-					u.InputTokenDetails["image_tokens"] = image
-					ctx.SetUserAttribute(CtxKeyInputToken, u.InputToken)
-				}
-			}
-		}
 		ExtractInputTokenDetails(ctx, chunk, &u)
 		ExtractOutputTokenDetails(ctx, chunk, &u)
 		ExtractTotalTokens(ctx, chunk, &u)
@@ -192,18 +177,27 @@ func ExtractModel(ctx wrapper.HttpContext, body []byte, u *TokenUsage) {
 }
 
 func ExtractInputTokens(ctx wrapper.HttpContext, body []byte, u *TokenUsage) {
-	if inputToken := wrapper.GetValueFromBody(body, []string{
+	inputToken := wrapper.GetValueFromBody(body, []string{
 		UsageInputTokensPathOpenAIChatCompletions, // completions , chatcompleations
 		UsageInputTokensPathOpenAIImages,          // images, audio
 		UsageInputTokensPathOpenAIResponses,       // responses
 		UsageInputTokensPathGemini,                // Gemini GenerateContent
 		UsageInputTokensPathAnthropicMessages,     // Anthrophic messages
-	}); inputToken != nil {
+	})
+	if inputToken != nil {
 		u.InputToken = inputToken.Int()
 	} else {
 		inputToken, ok := ctx.GetUserAttribute(CtxKeyInputToken).(int64) // anthropic messages
 		if ok && inputToken > 0 {
 			u.InputToken = inputToken
+		}
+	}
+	if gjson.GetBytes(body, "output.embeddings").IsArray() && !gjson.GetBytes(body, "usage.input_tokens_details").IsObject() {
+		if imageToken := wrapper.GetValueFromBody(body, []string{UsageImageTokensPathQwenEmbeddings}); imageToken != nil {
+			u.InputToken = imageToken.Int()
+			if inputToken != nil {
+				u.InputToken += inputToken.Int()
+			}
 		}
 	}
 	ctx.SetUserAttribute(CtxKeyInputToken, u.InputToken)
@@ -236,6 +230,13 @@ func ExtractInputTokenDetails(ctx wrapper.HttpContext, body []byte, u *TokenUsag
 	}); inputTokenDetails != nil && inputTokenDetails.IsObject() {
 		for key, value := range inputTokenDetails.Map() {
 			u.InputTokenDetails[key] = value.Int()
+		}
+	} else if gjson.GetBytes(body, "output.embeddings").IsArray() {
+		if text := wrapper.GetValueFromBody(body, []string{UsageInputTokensPathOpenAIImages}); text != nil {
+			u.InputTokenDetails["text_tokens"] = text.Int()
+		}
+		if image := wrapper.GetValueFromBody(body, []string{UsageImageTokensPathQwenEmbeddings}); image != nil {
+			u.InputTokenDetails["image_tokens"] = image.Int()
 		}
 	}
 
