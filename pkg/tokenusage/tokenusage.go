@@ -107,9 +107,9 @@ type TokenUsage struct {
 }
 
 func GetTokenUsage(ctx wrapper.HttpContext, body []byte) TokenUsage {
-	chunks := slices.Values([][]byte{body})
-	if !gjson.ValidBytes(body) {
-		chunks = bytes.SplitSeq(wrapper.UnifySSEChunk(body), []byte("\n\n"))
+	chunks := bytes.SplitSeq(wrapper.UnifySSEChunk(body), []byte("\n\n"))
+	if gjson.ValidBytes(body) {
+		chunks = slices.Values([][]byte{body})
 	}
 	u := TokenUsage{
 		InputTokenDetails:  make(map[string]int64),
@@ -177,14 +177,13 @@ func ExtractModel(ctx wrapper.HttpContext, body []byte, u *TokenUsage) {
 }
 
 func ExtractInputTokens(ctx wrapper.HttpContext, body []byte, u *TokenUsage) {
-	inputToken := wrapper.GetValueFromBody(body, []string{
+	if inputToken := wrapper.GetValueFromBody(body, []string{
 		UsageInputTokensPathOpenAIChatCompletions, // completions , chatcompleations
 		UsageInputTokensPathOpenAIImages,          // images, audio
 		UsageInputTokensPathOpenAIResponses,       // responses
 		UsageInputTokensPathGemini,                // Gemini GenerateContent
 		UsageInputTokensPathAnthropicMessages,     // Anthrophic messages
-	})
-	if inputToken != nil {
+	}); inputToken != nil {
 		u.InputToken = inputToken.Int()
 	} else {
 		inputToken, ok := ctx.GetUserAttribute(CtxKeyInputToken).(int64) // anthropic messages
@@ -194,10 +193,7 @@ func ExtractInputTokens(ctx wrapper.HttpContext, body []byte, u *TokenUsage) {
 	}
 	if gjson.GetBytes(body, "output.embeddings").IsArray() && !gjson.GetBytes(body, "usage.input_tokens_details").IsObject() {
 		if imageToken := wrapper.GetValueFromBody(body, []string{UsageImageTokensPathQwenEmbeddings}); imageToken != nil {
-			u.InputToken = imageToken.Int()
-			if inputToken != nil {
-				u.InputToken += inputToken.Int()
-			}
+			u.InputToken = gjson.GetBytes(body, UsageInputTokensPathOpenAIImages).Int() + imageToken.Int()
 		}
 	}
 	ctx.SetUserAttribute(CtxKeyInputToken, u.InputToken)
