@@ -16,9 +16,12 @@ package tokenusage
 
 import (
 	"bytes"
+	"math"
 	"slices"
+	"strconv"
 
 	"github.com/higress-group/wasm-go/pkg/wrapper"
+	"github.com/tidwall/gjson"
 )
 
 const (
@@ -105,7 +108,10 @@ type TokenUsage struct {
 }
 
 func GetTokenUsage(ctx wrapper.HttpContext, body []byte) TokenUsage {
-	chunks := bytes.SplitSeq(wrapper.UnifySSEChunk(body), []byte("\n\n"))
+	chunks := slices.Values([][]byte{body})
+	if !gjson.ValidBytes(body) {
+		chunks = bytes.SplitSeq(wrapper.UnifySSEChunk(body), []byte("\n\n"))
+	}
 	u := TokenUsage{
 		InputTokenDetails:  make(map[string]int64),
 		OutputTokenDetails: make(map[string]int64),
@@ -124,6 +130,20 @@ func GetTokenUsage(ctx wrapper.HttpContext, body []byte) TokenUsage {
 		ExtractModel(ctx, chunk, &u)
 		ExtractInputTokens(ctx, chunk, &u)
 		ExtractOutputTokens(ctx, chunk, &u)
+		// Legacy Qwen embeddings report text and image input tokens separately.
+		if gjson.GetBytes(chunk, "output.embeddings").IsArray() && !gjson.GetBytes(chunk, "usage.input_tokens_details").Exists() {
+			text, textErr := strconv.ParseInt(gjson.GetBytes(chunk, "usage.input_tokens").Raw, 10, 64)
+			image, imageErr := strconv.ParseInt(gjson.GetBytes(chunk, "usage.image_tokens").Raw, 10, 64)
+			if textErr == nil && imageErr == nil && text >= 0 && image >= 0 && text <= math.MaxInt64-image {
+				input := text + image
+				if gjson.GetBytes(chunk, "usage.total_tokens").Exists() || u.OutputToken >= 0 && input <= math.MaxInt64-u.OutputToken {
+					u.InputToken = input
+					u.InputTokenDetails["text_tokens"] = text
+					u.InputTokenDetails["image_tokens"] = image
+					ctx.SetUserAttribute(CtxKeyInputToken, u.InputToken)
+				}
+			}
+		}
 		ExtractInputTokenDetails(ctx, chunk, &u)
 		ExtractOutputTokenDetails(ctx, chunk, &u)
 		ExtractTotalTokens(ctx, chunk, &u)
